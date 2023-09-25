@@ -49,6 +49,13 @@ func main() {
 		logger.Error("MQTT Connection Error: ", token.Error())
 	}
 
+	//订阅command Topic, 用于处理接口命令
+	if token := client.Subscribe("/smartpower/command", 0, func(c mqtt.Client, m mqtt.Message) {
+		handleCommand(c, m, logger)
+	}); token.Wait() && token.Error() != nil {
+		logger.Error("MQTT Subscribe Error: ", token.Error())
+	}
+
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
@@ -92,23 +99,48 @@ func handleConnection(conn net.Conn, logger *logrus.Logger, mqttClient mqtt.Clie
 		value = strings.Replace(value, " ", "", -1)
 		logger.Info("Data", value)
 		var r map[string]string
-		if err := json.Unmarshal([]byte(value), &r); err != nil {
-			logger.WithField("Data: ", value).Error("ReceivedData decode error: ", err)
-			return
+		if len(value) > 0 {
+			if err := json.Unmarshal([]byte(value), &r); err != nil {
+				logger.WithField("Data: ", value).Error("ReceivedData decode error: ", err)
+				return
+			}
+			device_mac := r["DeviceID"]
+			connections[device_mac] = conn
+			message := strings.ToLower(r["Message"])
+
+			var mqtt_topic string
+			switch message {
+			case "status":
+				mqtt_topic = "/smartpower/status"
+			case "systeminfo":
+				mqtt_topic = "/smartpower/systeminfo"
+			default:
+				mqtt_topic = "/smartpower/settingres"
+			}
+			logger.Info("Send to Topic: ", mqtt_topic)
+			var res_str string
+			res_str = handleResponse(r, 1)
+			if token := mqttClient.Publish(mqtt_topic, 0, false, value); token.Wait() && token.Error() != nil {
+				logger.Error("Error publish Message: ", token.Error())
+				res_str = handleResponse(r, 0)
+			}
+			conn.Write([]byte(res_str))
 		}
-		device_mac := r["DeviceID"]
-		connections[device_mac] = conn
-		message := r["Message"]
-		m_r := strings.Replace(message, " ", "_", -1)
-		mqtt_topic := "/smartpower/" + strings.ToLower(m_r)
-		var res_str string
-		res_str = handleResponse(r, 1)
-		if token := mqttClient.Publish(mqtt_topic, 0, false, receivedData.String()); token.Wait() && token.Error() != nil {
-			logger.Error("Error publish Message: ", token.Error())
-			res_str = handleResponse(r, 0)
-		}
-		conn.Write([]byte(res_str))
 	}
+}
+
+func handleCommand(mqttClient mqtt.Client, mqttMessage mqtt.Message, logger *logrus.Logger) {
+	message := string(mqttMessage.Payload())
+	m := strings.Replace(message, "**", "", -1)
+	logger.Info("Received Message: ", message)
+	var r map[string]string
+	if err := json.Unmarshal([]byte(m), &r); err != nil {
+		logger.WithField("Data: ", message).Error("ReceivedData decode error: ", err)
+		return
+	}
+	device_mac := r["DeviceID"]
+	conn := connections[device_mac]
+	conn.Write(mqttMessage.Payload())
 }
 
 func handleResponse(p map[string]string, f int) string {
