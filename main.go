@@ -139,8 +139,17 @@ func handleCommand(mqttClient mqtt.Client, mqttMessage mqtt.Message, logger *log
 		return
 	}
 	device_mac := r["DeviceID"]
-	conn := connections[device_mac]
-	conn.Write(mqttMessage.Payload())
+	conn, exist := connections[device_mac]
+	if exist {
+		_, err := conn.Write(mqttMessage.Payload())
+		if err != nil {
+			logger.Error("send command error: ", err)
+		} else {
+			logger.Debug("send success")
+		}
+	} else {
+		logger.Info("can not find device connection")
+	}
 }
 
 func handleResponse(p map[string]string, f int) string {
